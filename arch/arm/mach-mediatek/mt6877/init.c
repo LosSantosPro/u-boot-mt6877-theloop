@@ -48,84 +48,25 @@ int board_init(void)
 	return 0;
 }
 
-/*
- * Probe candidate MTK efuse base addresses to find MT6877's actual
- * efuse layout. Without a datasheet or UART reliably available, we
- * expose the readings via two fastboot getvar variables (efuse1 /
- * efuse2) so the host can query them. Each var carries two bases
- * worth of readings (words at +0x8 and +0xc) packed into the
- * 60-char fastboot response budget.
- *
- * Format per entry: "XX=WORD8WORDC" where XX is the top 8 bits of the
- * base address (e.g. "20" = 0x11f20000). Entries joined with ",".
- * Example: "20=1234567890ABCDEF,10=00000000FFFFFFFF" - base 0x11f20000
- * read 0x12345678 at +8 and 0x90ABCDEF at +c.
- *
- * Candidate bases (from other MTK DTSIs in upstream):
- *   0x11f20000 - MT8188, MT7981b
- *   0x11f10000 - MT8183 (MT8791 may inherit)
- *   0x11c10000 - MT8192, MT8195
- *   0x11cb0000 - MT8186
- * Efuse is auto-latched by preloader; no clock setup needed.
- */
-struct efuse_probe {
-	u32 base;
-	u8  tag;	/* top byte of base for compact display */
-};
-
-static const struct efuse_probe efuse_set1[] = {
-	{ 0x11f20000, 0x20 },	/* MT8188 family */
-	{ 0x11f10000, 0x10 },	/* MT8183 family */
-};
-static const struct efuse_probe efuse_set2[] = {
-	{ 0x11c10000, 0xc1 },	/* MT8192/8195 family */
-	{ 0x11cb0000, 0xcb },	/* MT8186 family */
-};
-
-static void theloop_probe_and_pack(const struct efuse_probe *set, int n,
-				   char *envname)
-{
-	char buf[64];
-	int pos = 0;
-	u32 w8, wc;
-	int i;
-
-	buf[0] = '\0';
-	for (i = 0; i < n; i++) {
-		w8 = readl((void __iomem *)(uintptr_t)(set[i].base + 0x8));
-		wc = readl((void __iomem *)(uintptr_t)(set[i].base + 0xc));
-		pos += snprintf(buf + pos, sizeof(buf) - pos,
-				"%s%02X=%08X%08X",
-				i ? "," : "", set[i].tag, w8, wc);
-		if (pos >= sizeof(buf) - 1)
-			break;
-	}
-	env_set(envname, buf);
-}
-
 int board_late_init(void)
 {
 	/*
 	 * Populate env vars that fastboot getvar reads:
 	 *   board    -> getvar "product"    (tb8791p1_64 matches stock LK)
 	 *   platform -> getvar "platform"   (SoC codename)
-	 *   efuse1   -> getvar "efuse1"     (debug: efuse probe set 1)
-	 *   efuse2   -> getvar "efuse2"     (debug: efuse probe set 2)
 	 *
 	 * Must live in board_late_init (not board_init) because env is not
 	 * finalized until board_init returns; values set earlier get wiped
 	 * by env_relocate.
 	 *
-	 * serial# deliberately not set yet: we need the efuse1/efuse2
-	 * readings to know which base address is correct for MT6877.
-	 * Once that's confirmed, a follow-up build will set serial# to
-	 * a hex string derived from the correct efuse data bank.
+	 * serial# not set yet; we need to find the correct offset into the
+	 * MT6877 efuse controller (base 0x11cb0000, confirmed live in v129
+	 * via status-register pattern 0x000003FF at offset 8) where the
+	 * per-die unique ID lives. v130 exposes a parameterized
+	 * `fastboot getvar efuse:XX` probe for that search.
 	 */
 	env_set("board", "tb8791p1_64");
 	env_set("platform", "MT6877");
-
-	theloop_probe_and_pack(efuse_set1, ARRAY_SIZE(efuse_set1), "efuse1");
-	theloop_probe_and_pack(efuse_set2, ARRAY_SIZE(efuse_set2), "efuse2");
 
 	return 0;
 }

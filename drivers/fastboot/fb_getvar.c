@@ -3,6 +3,7 @@
  * Copyright (C) 2016 The Android Open Source Project
  */
 
+#include <asm/io.h>
 #include <env.h>
 #include <fastboot.h>
 #include <fastboot-internal.h>
@@ -28,8 +29,7 @@ static void getvar_has_slot(char *var_parameter, char *response);
 static void getvar_partition_type(char *part_name, char *response);
 static void getvar_partition_size(char *part_name, char *response);
 static void getvar_is_userspace(char *var_parameter, char *response);
-static void getvar_efuse1(char *var_parameter, char *response);
-static void getvar_efuse2(char *var_parameter, char *response);
+static void getvar_efuse(char *var_parameter, char *response);
 
 static const struct {
 	const char *variable;
@@ -95,15 +95,13 @@ static const struct {
 		.dispatch = getvar_is_userspace,
 		.list = true
 	}, {
-		/* Debug: MT6877 efuse probe, readings from env vars populated
-		 * in board_late_init(). Non-listed so they don't appear in
-		 * "getvar all"; query with `fastboot getvar efuse1`. */
-		.variable = "efuse1",
-		.dispatch = getvar_efuse1,
-		.list = false
-	}, {
-		.variable = "efuse2",
-		.dispatch = getvar_efuse2,
+		/* Debug: MT6877 efuse probe. Parameterized - the caller passes
+		 * a hex offset after the colon, e.g. `fastboot getvar efuse:40`.
+		 * Reads 0x11cb0000 + offset (efuse base confirmed mapped in v129
+		 * via status-register read pattern at offset 8). Non-listed so
+		 * it doesn't appear in "getvar all". */
+		.variable = "efuse",
+		.dispatch = getvar_efuse,
 		.list = false
 	}
 };
@@ -277,18 +275,44 @@ static void getvar_is_userspace(char *var_parameter, char *response)
 	fastboot_okay("no", response);
 }
 
-static void getvar_efuse1(char *var_parameter, char *response)
+static void getvar_efuse(char *var_parameter, char *response)
 {
-	const char *v = env_get("efuse1");
+	/*
+	 * Parameterized efuse peek: `fastboot getvar efuse:XX` reads the
+	 * 32-bit word at MT6877 efuse controller base (0x11cb0000) + hex
+	 * offset XX. Offset is clamped to the 0x1000 window to avoid
+	 * wandering into adjacent MMIO. If no parameter is provided,
+	 * returns a short dump of common data-bank candidate offsets.
+	 */
+	u32 base = 0x11cb0000;
+	char buf[64];
+	int pos = 0;
 
-	fastboot_okay(v ? v : "not-probed", response);
-}
+	if (var_parameter && *var_parameter) {
+		unsigned long off = simple_strtoul(var_parameter, NULL, 16);
+		u32 val;
 
-static void getvar_efuse2(char *var_parameter, char *response)
-{
-	const char *v = env_get("efuse2");
+		if (off >= 0x1000) {
+			fastboot_fail("offset out of range", response);
+			return;
+		}
+		val = readl((void __iomem *)(uintptr_t)(base + off));
+		snprintf(buf, sizeof(buf), "%03lX=%08X", off, val);
+		fastboot_okay(buf, response);
+	} else {
+		/* No parameter: dump 4 common MTK efuse data-bank offsets. */
+		static const u32 offs[] = { 0x40, 0x80, 0xc0, 0x100 };
+		int i;
 
-	fastboot_okay(v ? v : "not-probed", response);
+		for (i = 0; i < ARRAY_SIZE(offs); i++) {
+			u32 val = readl((void __iomem *)(uintptr_t)(base + offs[i]));
+
+			pos += snprintf(buf + pos, sizeof(buf) - pos,
+					"%s%X=%08X",
+					i ? "," : "", offs[i], val);
+		}
+		fastboot_okay(buf, response);
+	}
 }
 
 static int current_all_dispatch;
