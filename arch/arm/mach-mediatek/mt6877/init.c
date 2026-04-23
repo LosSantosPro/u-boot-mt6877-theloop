@@ -116,8 +116,17 @@ static void theloop_gpio_set_output(int pin, int value)
  *   PWR_STATUS_2ND (2nd ack)    = 0x10006EF4
  *   DISP status mask            = BIT(18) at both status regs
  *
- * Infracfg bus protection at 0x1020e000:
- *   bus protect CLR reg = 0x1020E2D8
+ * Infracfg bus protection at 0x10001000 (infracfg_ao).
+ * IMPORTANT: the scp_domain_data_mt6877 refers to "IFR_TYPE" which
+ * bus_list resolves to "infracfg". In the DTS, scpsys binds
+ *   infracfg = <&infracfg_ao>
+ * so IFR_TYPE actually means infracfg_ao = 0x10001000, NOT the
+ * other "infracfg" syscon at 0x1020e000 referenced by scpsys_clk.
+ * v138 used 0x1020e000 which silently succeeded as a write (MMIO
+ * mapped somewhere irrelevant) but left the real bus protection
+ * bits asserted, so DSI transactions kept getting dropped.
+ *
+ *   bus protect CLR reg = 0x100012D8
  *   three DIS0_PROT_STEP masks from scp_domain_data_mt6877
  *
  * MMSYS at 0x14000000:
@@ -126,7 +135,7 @@ static void theloop_gpio_set_output(int pin, int value)
  * After this routine, DSI/OVL/other MMSYS sub-modules become live.
  */
 #define SPM_BASE		0x10006000
-#define INFRACFG_AO_BASE	0x1020e000
+#define INFRACFG_AO_BASE	0x10001000
 #define MMSYS_BASE		0x14000000
 
 #define DISP_PWR_CTL		(SPM_BASE + 0x0E48)
