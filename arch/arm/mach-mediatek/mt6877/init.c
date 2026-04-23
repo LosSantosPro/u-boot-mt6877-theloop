@@ -15,8 +15,10 @@
 #include <dm/uclass.h>
 #include <env.h>
 #include <fdtdec.h>
+#include <linux/delay.h>
 #include <linux/kernel.h>
 #include <linux/sizes.h>
+#include <power/regulator.h>
 #include <wdt.h>
 
 #ifdef CONFIG_ARM64
@@ -48,6 +50,110 @@ int board_init(void)
 	return 0;
 }
 
+/*
+ * Phase 1 display bringup: power the LCM rails and pulse panel reset.
+ *
+ * MT6877 panel (from stock LK disassembly):
+ *   IC:     HX8399-A (LK reports hx8399a for this SKU; preloader LCM
+ *           name string shows hx8399c)
+ *   GPIOs:  108 = LCM reset (active low)
+ *           140 = LCM bias / control 1 (initial low)
+ *           141 = LCM bias / control 2 (initial low)
+ *   Rails:  VDDI  = MT6359P ldo_vio18 (1.8V)
+ *           VMCH  = MT6359P ldo_vio28 (2.8V - closest analogue)
+ *
+ * MT6877 inherits the MT8188 pinctrl IP: five iocfg bases
+ * (iocfg0 at 0x10005000, iocfg_rm 0x11c00000, iocfg_lt 0x11e10000,
+ * iocfg_lm 0x11e20000, iocfg_rt 0x11ea0000), all referenced in stock
+ * lk_a.bin. For GPIO direction + data-out pins 0..177 all live in
+ * iocfg0, so a minimal direct-MMIO helper is enough for Phase 1
+ * without pulling in the 1345-line MT8188 pinctrl driver wholesale.
+ *
+ * Register layout per MT8188 pinctrl (same IP block):
+ *   iocfg0 + 0x300 + (pin/8)*0x10, bits (pin%8)*4, 4 bits   : mode
+ *   iocfg0 + 0x000 + (pin/32)*0x10, bit (pin%32), 1 bit     : direction
+ *   iocfg0 + 0x100 + (pin/32)*0x10, bit (pin%32), 1 bit     : data-out
+ */
+#define MT6877_IOCFG0_BASE	0x10005000
+
+static void theloop_gpio_set_output(int pin, int value)
+{
+	void __iomem *iocfg0 = (void __iomem *)(uintptr_t)MT6877_IOCFG0_BASE;
+	u32 reg, bit, val;
+
+	/* Select GPIO function (mode 0) for this pin. 4 bits/pin. */
+	reg = 0x300 + (pin / 8) * 0x10;
+	bit = (pin % 8) * 4;
+	val = readl(iocfg0 + reg);
+	val &= ~(0xfU << bit);
+	writel(val, iocfg0 + reg);
+
+	/* Direction = output (1). 32 pins per register. */
+	reg = (pin / 32) * 0x10;
+	bit = pin % 32;
+	val = readl(iocfg0 + reg);
+	val |= (1U << bit);
+	writel(val, iocfg0 + reg);
+
+	/* Data-out value. */
+	reg = 0x100 + (pin / 32) * 0x10;
+	val = readl(iocfg0 + reg);
+	if (value)
+		val |= (1U << bit);
+	else
+		val &= ~(1U << bit);
+	writel(val, iocfg0 + reg);
+}
+
+static void theloop_panel_power_on(void)
+{
+	struct udevice *reg;
+	int ret;
+
+	/*
+	 * Enable VDDI (1.8V display I/O) via MT6359P ldo_vio18. Usually
+	 * already on from preloader state, but stock LK re-enables to be
+	 * defensive.
+	 */
+	ret = uclass_get_device_by_name(UCLASS_REGULATOR, "ldo_vio18", &reg);
+	if (!ret)
+		regulator_set_enable(reg, true);
+	else
+		printf("theloop: ldo_vio18 not found (%d)\n", ret);
+
+	/*
+	 * Enable VMCH equivalent (2.8V LCM analogue) via ldo_vio28. The
+	 * MT6359P doesn't have a dedicated "vmch" LDO; stock boards use
+	 * vio28 as the 2.8V display supply.
+	 */
+	ret = uclass_get_device_by_name(UCLASS_REGULATOR, "ldo_vio28", &reg);
+	if (!ret)
+		regulator_set_enable(reg, true);
+	else
+		printf("theloop: ldo_vio28 not found (%d)\n", ret);
+
+	mdelay(5);	/* rails settle */
+
+	/* Bias / control: low per stock LK lcm_init */
+	theloop_gpio_set_output(140, 0);
+	theloop_gpio_set_output(141, 0);
+	mdelay(5);
+
+	/*
+	 * Reset pulse on GPIO 108. HX8399 datasheet: RESX must be held
+	 * low >= 10us, panel ready 120ms after release. Go conservative:
+	 * 1ms low, 150ms wait after release.
+	 */
+	theloop_gpio_set_output(108, 1);
+	mdelay(1);
+	theloop_gpio_set_output(108, 0);
+	mdelay(1);
+	theloop_gpio_set_output(108, 1);
+	mdelay(150);
+
+	printf("theloop: panel rails + reset sequence done\n");
+}
+
 int board_late_init(void)
 {
 	/*
@@ -68,6 +174,26 @@ int board_late_init(void)
 	 */
 	env_set("board", "tb8791p1_64");
 	env_set("platform", "MT6877");
+
+	/*
+	 * Display Phase 1: panel rails + reset. This only powers the
+	 * panel and releases it from reset; no DSI output yet. Visible
+	 * success:
+	 *   - rail voltage present at panel connector (multimeter check)
+	 *   - GPIO 108 data-out bit = 1 (reset released, panel idle)
+	 *   - GPIO 140/141 data-out bits = 0
+	 *
+	 * Verify from fastboot without physical probing:
+	 *   fastboot oem "run:md.l 0x10005130 1"  do for pins 96-127
+	 *   fastboot oem "run:md.l 0x10005140 1"  do for pins 128-159
+	 * Expect:
+	 *   @0x10005130 bit 12 (pin 108) = 1
+	 *   @0x10005140 bit 12 (pin 140) = 0
+	 *   @0x10005140 bit 13 (pin 141) = 0
+	 * Direction regs (0x10005030 / 0x10005040) should have the same
+	 * bits set, marking those pins as outputs.
+	 */
+	theloop_panel_power_on();
 
 	return 0;
 }
