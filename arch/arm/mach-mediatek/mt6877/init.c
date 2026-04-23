@@ -47,20 +47,20 @@ int board_init(void)
 {
 	/*
 	 * Populate env vars that fastboot getvar reads:
-	 *   board     -> getvar "product"      (tb8791p1_64 matches stock LK)
-	 *   platform  -> getvar "platform"     (SoC codename)
-	 *   serial#   -> getvar "serialno" and USB descriptor iSerialNumber
+	 *   board    -> getvar "product"    (tb8791p1_64 matches stock LK)
+	 *   platform -> getvar "platform"   (SoC codename)
 	 *
-	 * These are hardcoded here because CONFIG_ENV_IS_NOWHERE=y means there
-	 * is no persistent env; without this, getvar returns "Board not set"
-	 * / "platform not set" / "Value not set" and host-side tooling that
-	 * matches on product (e.g. Android build flash scripts) refuses to
-	 * proceed. serial# is not a real per-device serial - set per-device
-	 * from userspace later if needed.
+	 * serial# is intentionally NOT set. The real per-device serial lives
+	 * in the nvram partition's SN1 blob, which is written by MTK's factory
+	 * QC tool and read by the kernel nvram driver at runtime. Hardcoding
+	 * a fake string here (stock LK uses "0123456789ABCDEF" across every
+	 * shipped device) would be misleading and prevent `fastboot devices`
+	 * from distinguishing units. Leaving it unset makes getvar serialno
+	 * return "Value not set" which is honest. Userspace gets the real
+	 * serial from the kernel side once pmOS boots.
 	 */
 	env_set("board", "tb8791p1_64");
 	env_set("platform", "MT6877");
-	env_set("serial#", "theloop-0001");
 	return 0;
 }
 
