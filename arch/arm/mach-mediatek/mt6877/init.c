@@ -109,25 +109,31 @@ static void theloop_gpio_set_output(int pin, int value)
  * Display subsystem power-on. Translated from Linux kernel's
  * drivers/soc/mediatek/mtk-scpsys.c + mtk-scpsys-mt6877.c.
  *
- * MT6877 SCPSYS (=SPM) is at 0x10006000. DISP power domain control
- * register is at ctl_offs=0x0E48. Status ACK bits are BIT(30) for
- * PWR_ON and BIT(31) for PWR_ON_2ND (in the ctl register itself,
- * not a separate status register).
+ * Layout:
+ *   SCPSYS (=SPM) base          = 0x10006000
+ *   DISP power control register = 0x10006E48  (ctl_offs 0x0E48)
+ *   PWR_STATUS    (1st ack)     = 0x10006EF0  (pwr_sta_offs from scp_ctrl_reg)
+ *   PWR_STATUS_2ND (2nd ack)    = 0x10006EF4
+ *   DISP status mask            = BIT(18) at both status regs
  *
- * Bus protection for DISP is in infracfg at 0x1020e000 with three
- * masks covering steps 1, 2_0, and 2_1 (see scp_domain_data_mt6877
- * DIS0_PROT_STEP*_MASK).
+ * Infracfg bus protection at 0x1020e000:
+ *   bus protect CLR reg = 0x1020E2D8
+ *   three DIS0_PROT_STEP masks from scp_domain_data_mt6877
  *
- * After this routine, MMSYS sub-modules (DSI@14013000, OVL@14005000,
- * etc.) become readable. Before this, they all read as 0 because the
- * display power domain is off and the bus protection bridge stops
- * the transaction.
+ * MMSYS at 0x14000000:
+ *   MM0 CG_CLR at +0x108, MM1 CG_CLR at +0x1A8
+ *
+ * After this routine, DSI/OVL/other MMSYS sub-modules become live.
  */
 #define SPM_BASE		0x10006000
 #define INFRACFG_AO_BASE	0x1020e000
 #define MMSYS_BASE		0x14000000
 
 #define DISP_PWR_CTL		(SPM_BASE + 0x0E48)
+#define PWR_STATUS		(SPM_BASE + 0x0EF0)
+#define PWR_STATUS_2ND		(SPM_BASE + 0x0EF4)
+#define DISP_STA_MASK		BIT(18)
+
 #define IFR_BP_CLR		(INFRACFG_AO_BASE + 0x02D8)
 #define IFR_BP_STA		(INFRACFG_AO_BASE + 0x02D0)
 
@@ -138,8 +144,6 @@ static void theloop_gpio_set_output(int pin, int value)
 #define PWR_CLK_DIS_BIT		BIT(4)
 #define PWR_SRAM_PDN_BIT	BIT(8)
 #define PWR_SRAM_ACK_BIT	BIT(12)
-#define PWR_ACK			BIT(30)
-#define PWR_ACK_2ND		BIT(31)
 
 /* From DIS0_PROT_STEP*_MASK in mtk-scpsys-mt6877.c */
 #define DIS0_PROT_STEP1_0_MASK	(BIT(0) | BIT(2) | BIT(10) | BIT(12) | \
@@ -156,31 +160,38 @@ static int theloop_disp_domain_power_on(void)
 
 	val = readl(ctl);
 
-	/* 1. Assert PWR_ON, wait for PWR_ACK */
+	/*
+	 * 1. Assert PWR_ON, wait for PWR_STATUS bit 18. MTK SCPSYS puts
+	 * the status bit at a separate register (pwr_sta_offs = 0x0EF0)
+	 * rather than in the control register. Without this, we spin on
+	 * the wrong bit and falsely time out.
+	 */
 	val |= PWR_ON_BIT;
 	writel(val, ctl);
 	for (retries = 1000; retries; retries--) {
-		if (readl(ctl) & PWR_ACK)
+		if (readl((void __iomem *)(uintptr_t)PWR_STATUS) & DISP_STA_MASK)
 			break;
 		udelay(1);
 	}
 	if (!retries) {
-		printf("theloop: DISP PWR_ON ack timeout\n");
+		printf("theloop: DISP PWR_ON status timeout (sta=0x%08x)\n",
+		       readl((void __iomem *)(uintptr_t)PWR_STATUS));
 		return -1;
 	}
 
 	udelay(50);
 
-	/* 2. Assert PWR_ON_2ND, wait for PWR_ACK_2ND */
+	/* 2. Assert PWR_ON_2ND, wait for PWR_STATUS_2ND bit 18. */
 	val |= PWR_ON_2ND_BIT;
 	writel(val, ctl);
 	for (retries = 1000; retries; retries--) {
-		if (readl(ctl) & PWR_ACK_2ND)
+		if (readl((void __iomem *)(uintptr_t)PWR_STATUS_2ND) & DISP_STA_MASK)
 			break;
 		udelay(1);
 	}
 	if (!retries) {
-		printf("theloop: DISP PWR_ON_2ND ack timeout\n");
+		printf("theloop: DISP PWR_ON_2ND status timeout (sta2nd=0x%08x)\n",
+		       readl((void __iomem *)(uintptr_t)PWR_STATUS_2ND));
 		return -2;
 	}
 
