@@ -105,6 +105,125 @@ static void theloop_gpio_set_output(int pin, int value)
 	writel(val, iocfg0 + reg);
 }
 
+/*
+ * Display subsystem power-on. Translated from Linux kernel's
+ * drivers/soc/mediatek/mtk-scpsys.c + mtk-scpsys-mt6877.c.
+ *
+ * MT6877 SCPSYS (=SPM) is at 0x10006000. DISP power domain control
+ * register is at ctl_offs=0x0E48. Status ACK bits are BIT(30) for
+ * PWR_ON and BIT(31) for PWR_ON_2ND (in the ctl register itself,
+ * not a separate status register).
+ *
+ * Bus protection for DISP is in infracfg at 0x1020e000 with three
+ * masks covering steps 1, 2_0, and 2_1 (see scp_domain_data_mt6877
+ * DIS0_PROT_STEP*_MASK).
+ *
+ * After this routine, MMSYS sub-modules (DSI@14013000, OVL@14005000,
+ * etc.) become readable. Before this, they all read as 0 because the
+ * display power domain is off and the bus protection bridge stops
+ * the transaction.
+ */
+#define SPM_BASE		0x10006000
+#define INFRACFG_AO_BASE	0x1020e000
+#define MMSYS_BASE		0x14000000
+
+#define DISP_PWR_CTL		(SPM_BASE + 0x0E48)
+#define IFR_BP_CLR		(INFRACFG_AO_BASE + 0x02D8)
+#define IFR_BP_STA		(INFRACFG_AO_BASE + 0x02D0)
+
+#define PWR_RST_B_BIT		BIT(0)
+#define PWR_ISO_BIT		BIT(1)
+#define PWR_ON_BIT		BIT(2)
+#define PWR_ON_2ND_BIT		BIT(3)
+#define PWR_CLK_DIS_BIT		BIT(4)
+#define PWR_SRAM_PDN_BIT	BIT(8)
+#define PWR_SRAM_ACK_BIT	BIT(12)
+#define PWR_ACK			BIT(30)
+#define PWR_ACK_2ND		BIT(31)
+
+/* From DIS0_PROT_STEP*_MASK in mtk-scpsys-mt6877.c */
+#define DIS0_PROT_STEP1_0_MASK	(BIT(0) | BIT(2) | BIT(10) | BIT(12) | \
+				 BIT(14) | BIT(16) | BIT(24) | BIT(26))
+#define DIS0_PROT_STEP2_0_MASK	BIT(6)
+#define DIS0_PROT_STEP2_1_MASK	(BIT(1) | BIT(3) | BIT(15) | BIT(17) | \
+				 BIT(25) | BIT(27))
+
+static int theloop_disp_domain_power_on(void)
+{
+	void __iomem *ctl = (void __iomem *)(uintptr_t)DISP_PWR_CTL;
+	u32 val;
+	int retries;
+
+	val = readl(ctl);
+
+	/* 1. Assert PWR_ON, wait for PWR_ACK */
+	val |= PWR_ON_BIT;
+	writel(val, ctl);
+	for (retries = 1000; retries; retries--) {
+		if (readl(ctl) & PWR_ACK)
+			break;
+		udelay(1);
+	}
+	if (!retries) {
+		printf("theloop: DISP PWR_ON ack timeout\n");
+		return -1;
+	}
+
+	udelay(50);
+
+	/* 2. Assert PWR_ON_2ND, wait for PWR_ACK_2ND */
+	val |= PWR_ON_2ND_BIT;
+	writel(val, ctl);
+	for (retries = 1000; retries; retries--) {
+		if (readl(ctl) & PWR_ACK_2ND)
+			break;
+		udelay(1);
+	}
+	if (!retries) {
+		printf("theloop: DISP PWR_ON_2ND ack timeout\n");
+		return -2;
+	}
+
+	/* 3. De-assert PWR_CLK_DIS, PWR_ISO, assert PWR_RST_B */
+	val &= ~PWR_CLK_DIS_BIT;
+	writel(val, ctl);
+	val &= ~PWR_ISO_BIT;
+	writel(val, ctl);
+	val |= PWR_RST_B_BIT;
+	writel(val, ctl);
+
+	/* 4. SRAM wake: clear PDN bit, wait for ACK clear */
+	val &= ~PWR_SRAM_PDN_BIT;
+	writel(val, ctl);
+	for (retries = 1000; retries; retries--) {
+		if (!(readl(ctl) & PWR_SRAM_ACK_BIT))
+			break;
+		udelay(1);
+	}
+	if (!retries) {
+		printf("theloop: DISP SRAM wake timeout\n");
+		return -3;
+	}
+
+	/* 5. Release bus protection (infracfg) in 3 steps. Each write
+	 * clears the corresponding mask in the bus protect register. */
+	writel(DIS0_PROT_STEP1_0_MASK,
+	       (void __iomem *)(uintptr_t)IFR_BP_CLR);
+	writel(DIS0_PROT_STEP2_0_MASK,
+	       (void __iomem *)(uintptr_t)IFR_BP_CLR);
+	writel(DIS0_PROT_STEP2_1_MASK,
+	       (void __iomem *)(uintptr_t)IFR_BP_CLR);
+
+	/* 6. Ungate MMSYS sub-module clocks. CG_CON0 at MMSYS+0x100
+	 * (sta), 0x104 (set), 0x108 (clr). CG_CON1 at +0x1a0/a4/a8.
+	 * Write the CLR regs with all-1s to enable every gate. */
+	writel(0xffffffff, (void __iomem *)(uintptr_t)(MMSYS_BASE + 0x108));
+	writel(0xffffffff, (void __iomem *)(uintptr_t)(MMSYS_BASE + 0x1a8));
+
+	printf("theloop: DISP domain powered on, MMSYS clocks ungated\n");
+	return 0;
+}
+
 static void theloop_panel_power_on(void)
 {
 	struct udevice *reg;
@@ -174,6 +293,15 @@ int board_late_init(void)
 	 */
 	env_set("board", "tb8791p1_64");
 	env_set("platform", "MT6877");
+
+	/*
+	 * Display Phase 2 (power domain): turn on the MT6877 DISP
+	 * power domain via SCPSYS and ungate MMSYS clocks. Without
+	 * this, every display MMIO register (DSI @ 0x14013000, OVL @
+	 * 0x14005000, etc.) reads as zero because the bus protection
+	 * bridge blocks transactions.
+	 */
+	theloop_disp_domain_power_on();
 
 	/*
 	 * Display Phase 1: panel rails + reset. This only powers the
