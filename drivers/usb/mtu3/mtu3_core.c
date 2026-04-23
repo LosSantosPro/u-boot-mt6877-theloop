@@ -8,8 +8,11 @@
  * Author: Chunfeng Yun <chunfeng.yun@mediatek.com>
  */
 
+#include <linux/arm-smccc.h>
+#include <linux/delay.h>
 #include <linux/log2.h>
 #include <linux/bitmap.h>
+#include <cpu_func.h>
 
 #include "mtu3.h"
 #include "mtu3_dr.h"
@@ -567,8 +570,16 @@ static void mtu3_regs_init(struct mtu3 *mtu)
 
 	/* delay about 0.1us from detecting reset to send chirp-K */
 	mtu3_clrbits(mbase, U3D_LINK_RESET_INFO, WTCHRP_MSK);
+#ifndef CONFIG_TARGET_MT6877
+	/*
+	 * Live Lineage MTU3 has DEVICE_CONF = 0x01000003 but u-boot clears
+	 * it to 0, which wipes hardware-default bits (likely HW_USB2_3_SEL
+	 * and related U2/U3 auto-detect bits at 24 and 0-1). Skip the write
+	 * on MT6877 so the POR/preloader defaults stand.
+	 */
 	/* U2/U3 detected by HW */
 	mtu3_writel(mbase, U3D_DEVICE_CONF, 0);
+#endif
 	/* enable automatical HWRW from L1 */
 	mtu3_setbits(mbase, U3D_POWER_MANAGEMENT, LPM_HRWE);
 
@@ -579,6 +590,32 @@ static void mtu3_regs_init(struct mtu3 *mtu)
 		mtu3_setbits(mbase, U3D_MISC_CTRL, VBUS_FRC_EN | VBUS_ON);
 	else	/* vbus detected by HW */
 		mtu3_clrbits(mbase, U3D_MISC_CTRL, VBUS_FRC_EN | VBUS_ON);
+
+#ifdef CONFIG_TARGET_MT6877
+	/*
+	 * Match live Lineage kernel register values exactly where we can.
+	 * Live dump at /sys/kernel/debug/usb/11201000.usb0/regs/:
+	 *   reg-csr  DEVICE_CONTROL  = 0x00000099 (DC_SESSION + bits 3,4,7)
+	 *   reg-csr  POWER_MANAGEMENT= 0x000064f1 (+ FORCE_HS, ISO_UPDATE,
+	 *                                           LPM_BESLD_STALL,
+	 *                                           LPM_BESL_STALL)
+	 *   reg-ippc SSUSB_U2_CTRL_0P = 0x00001848 (FORCE_IDDIG + RG_IDDIG
+	 *                                           + bits 3, 6 undocumented)
+	 *
+	 * Bits 3 and 6 of U2_CTRL_0P aren't in kernel regs.h definitions
+	 * but are set in live kernel state. Could be chirp/OTG related;
+	 * setting them matches kernel exactly.
+	 */
+	mtu3_setbits(mbase, U3D_DEVICE_CONTROL, 0x99);
+	mtu3_setbits(mbase, U3D_POWER_MANAGEMENT,
+		     BIT(4)  |   /* FORCE_HS */
+		     BIT(7)  |   /* ISO_UPDATE */
+		     BIT(13) |   /* LPM_BESLD_STALL */
+		     BIT(14));   /* LPM_BESL_STALL */
+	/* Also set U2_CTRL_0P extra bits to match 0x1848 */
+	mtu3_setbits(mtu->ippc_base, SSUSB_U2_CTRL(0),
+		     BIT(3) | BIT(6));
+#endif
 }
 
 static irqreturn_t mtu3_link_isr(struct mtu3 *mtu)

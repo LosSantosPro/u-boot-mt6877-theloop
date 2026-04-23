@@ -1,0 +1,286 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * theloop (MediaTek MT6877, Dimensity 930) u-boot device tree.
+ *
+ * Single final artifact produced from the three evening-of-2026-04-21
+ * analysis passes. Supersedes all three .diff files:
+ *   mt6877-theloop.dts.diff      Phase A clock-refs fix
+ *   mt6877-theloop.dts.mmc.diff  mmc0 node
+ *   mt6877-theloop.dts.usb.diff  two-level ssusb + tphy
+ *
+ * Apply with:
+ *   cp ~/uboot_work/mt6877-theloop.dts.final \
+ *      dts/upstream/src/arm64/mediatek/mt6877-theloop.dts
+ *
+ * Design notes live in PORT-PLAN-clk-mt6877.md, PORT-PLAN-pinctrl-mt6877.md,
+ * PORT-PLAN-brom-header.md, and PORT-PLAN-final-sanity-pass.md; not
+ * duplicated here. Inline comments only cover things that would surprise
+ * a reader coming straight to this file.
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/phy/phy.h>
+#include <dt-bindings/clock/mediatek,mt6877-clk.h>
+
+/ {
+	model = "theloop MT6877 engineering unit";
+	compatible = "theloop,mt6877", "mediatek,mt6877";
+	interrupt-parent = <&gic>;
+	#address-cells = <2>;
+	#size-cells = <2>;
+
+	aliases {
+		usb0 = &ssusb0;
+	};
+
+	chosen {
+		/*
+		 * No accessible UART on theloop (SuzyQable tested, SBU lines
+		 * not routed). u-boot runs silently until USB gadget comes
+		 * up, then fastboot status messages are the only channel.
+		 * CONFIG_REQUIRE_SERIAL_CONSOLE is unset in the defconfig so
+		 * we don't panic on this.
+		 */
+		stdout-path = "";
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a55";
+			reg = <0x0>;
+			enable-method = "psci";
+		};
+	};
+
+	psci {
+		compatible = "arm,psci-1.0";
+		method = "smc";
+	};
+
+	memory@40000000 {
+		device_type = "memory";
+		/*
+		 * Declaring 2 GiB. theloop silicon has 4 GiB LPDDR4x but
+		 * u-boot's FASTBOOT buffer (0x4d000000 + 0x8000000 =
+		 * 0x55000000) and environment all fit inside the first 2 GiB.
+		 * get_effective_memsize() in mt6877/init.c caps at
+		 * SZ_4G - ram_base = 3 GiB, so even if kernel DT fixup
+		 * extends this later, u-boot's DMA-visible window stays safe.
+		 */
+		reg = <0 0x40000000 0 0x80000000>;
+	};
+
+	timer {
+		compatible = "arm,armv8-timer";
+		interrupt-parent = <&gic>;
+		interrupts = <GIC_PPI 13 (GIC_CPU_MASK_SIMPLE(8) | IRQ_TYPE_LEVEL_LOW)>,
+		             <GIC_PPI 14 (GIC_CPU_MASK_SIMPLE(8) | IRQ_TYPE_LEVEL_LOW)>,
+		             <GIC_PPI 11 (GIC_CPU_MASK_SIMPLE(8) | IRQ_TYPE_LEVEL_LOW)>,
+		             <GIC_PPI 10 (GIC_CPU_MASK_SIMPLE(8) | IRQ_TYPE_LEVEL_LOW)>;
+	};
+
+	clk26m: clk26m {
+		/* Root crystal oscillator. 26 MHz feeds every PLL. */
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <26000000>;
+	};
+
+	soc {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		compatible = "simple-bus";
+		ranges;
+
+		gic: interrupt-controller@c000000 {
+			compatible = "arm,gic-v3";
+			/*
+			 * 4 cells is MTK convention (also used by mainline
+			 * mt8188.dtsi / mt8195.dtsi). u-boot tolerates it;
+			 * it's only non-standard vs upstream Linux GIC
+			 * binding. No u-boot driver parses interrupts at
+			 * runtime, so the extra cell is inert.
+			 */
+			#interrupt-cells = <4>;
+			interrupt-parent = <&gic>;
+			interrupt-controller;
+			reg = <0 0x0c000000 0 0x40000>,
+			      <0 0x0c040000 0 0x200000>;
+		};
+
+		/*
+		 * Clock controllers. Compat chain lists mt6877-native first
+		 * and the MT8188 fallback second, so the scaffold keeps
+		 * working if anyone reverts the clk-mt6877 driver; normal
+		 * builds bind clk-mt6877 via the first compat.
+		 */
+		topckgen: clock-controller@10000000 {
+			compatible = "mediatek,mt6877-topckgen",
+				     "mediatek,mt8188-topckgen", "syscon";
+			reg = <0 0x10000000 0 0x1000>;
+			#clock-cells = <1>;
+		};
+
+		infracfg_ao: clock-controller@10001000 {
+			compatible = "mediatek,mt6877-infracfg_ao",
+				     "mediatek,mt8188-infracfg-ao", "syscon";
+			reg = <0 0x10001000 0 0x1000>;
+			#clock-cells = <1>;
+		};
+
+		apmixedsys: clock-controller@1000c000 {
+			compatible = "mediatek,mt6877-apmixedsys",
+				     "mediatek,mt8188-apmixedsys", "syscon";
+			reg = <0 0x1000c000 0 0x1000>;
+			#clock-cells = <1>;
+		};
+
+		/*
+		 * PMIC wrapper at 0x10026000. mediatek,mt6877-pwrap compat is
+		 * handled in u-boot's mtk-pwrap.c via an alias to mt8188-pwrap
+		 * settings (same-era IP). Kernel DT declares reg-names "pwrap"
+		 * + "spi_mst" but u-boot only uses the first; second omitted.
+		 * Clocks map kernel's "spi"/"wrap" names to our IFRAO_PMIC_AP
+		 * and IFRAO_PMIC_TMR gates (matching kernel's mt6877 clk tree).
+		 */
+		pwrap: pwrap@10026000 {
+			compatible = "mediatek,mt6877-pwrap";
+			reg = <0 0x10026000 0 0x1000>;
+			reg-names = "pwrap";
+			clocks = <&infracfg_ao CLK_IFRAO_PMIC_AP>,
+				 <&infracfg_ao CLK_IFRAO_PMIC_TMR>;
+			clock-names = "spi", "wrap";
+		};
+
+		/*
+		 * eMMC controller. Preloader already muxed the pins and
+		 * handed us an initialised MSDC0, so u-boot just inherits
+		 * state. Compat chain uses mt8183-mmc fallback since
+		 * mt6877-mmc has no entry in u-boot's mtk-sd driver yet;
+		 * mt8183_compat activates the correct feature flags for
+		 * MT6877 MSDC IP (clk_div_bits=12, async_fifo, pad_tune0,
+		 * data_tune, busy_check, stop_clk_fix, enhance_rx,
+		 * use_dma_mode). No pinctrl-0 ref so pinctrl_select_state()
+		 * becomes a no-op inside mtk-sd's init path.
+		 */
+		mmc0: mmc@11230000 {
+			compatible = "mediatek,mt6877-mmc",
+				     "mediatek,mt8183-mmc";
+			reg = <0 0x11230000 0 0x10000>,
+			      <0 0x11f50000 0 0x1000>;
+			reg-names = "mac", "top";
+			interrupts = <GIC_SPI 131 IRQ_TYPE_LEVEL_HIGH 0>;
+			clocks = <&topckgen CLK_TOP_MSDC50_0_HCLK_SEL>,
+			         <&infracfg_ao CLK_IFRAO_MSDC0>,
+			         <&infracfg_ao CLK_IFRAO_MSDC0_SRC>;
+			clock-names = "source", "hclk", "source_cg";
+			bus-width = <8>;
+			max-frequency = <200000000>;
+			non-removable;
+			no-sd;
+			no-sdio;
+			cap-mmc-highspeed;
+			status = "okay";
+		};
+
+		/*
+		 * USB2 TPHY only. theloop doesn't wire SS+/SS- traces, so
+		 * USB3 PHY is omitted entirely — attempting to initialize it
+		 * on hardware that isn't connected confuses the gadget stack
+		 * or leaves dangling USB3 PIPE state that masks USB2 signal.
+		 * PHY calibration values from kernel DT (cust_mt6877_usb.dtsi).
+		 */
+		u3phy: usb-phy@11e40000 {
+			compatible = "mediatek,generic-tphy-v2";
+			#address-cells = <2>;
+			#size-cells = <2>;
+			ranges;
+			status = "okay";
+
+			u2port0: usb-phy2@11e40000 {
+				reg = <0 0x11e40000 0 0x700>;
+				clocks = <&clk26m>;
+				clock-names = "ref";
+				#phy-cells = <1>;
+				mediatek,eye-vrt = <6>;
+				mediatek,eye-term = <6>;
+				mediatek,discth = <7>;
+				status = "okay";
+			};
+		};
+
+		/*
+		 * MTU3 USB controller. Two-level structure REQUIRED by
+		 * u-boot's MTU3 glue driver. mtu3_plat.c:320 walks children
+		 * looking for mediatek,ssusb child; without it, ENODEV at
+		 * bind time and USB gadget never comes up.
+		 *
+		 * Clocks match kernel DT:
+		 *   sys_ck  = infracfg_ao.CLK_IFRAO_SSUSB
+		 *   ref_ck  = apmixedsys.CLK_APMIXED_USBPLL (direct, not via topckgen)
+		 *   dma_ck  = infracfg_ao.CLK_IFRAO_APDMA
+		 *   host_ck = infracfg_ao.CLK_IFRAO_SSUSB_XHCI
+		 */
+		ssusb0: usb@11200000 {
+			compatible = "mediatek,mt6877-mtu3", "mediatek,mtu3";
+			/*
+			 * u-boot's mtu3_hw_regs.h uses SSUSB_XHCI_BASE=0x0 and
+			 * SSUSB_DEV_BASE=0x1000, so "mac" must start at the
+			 * XHCI address (0x11200000). Kernel uses different
+			 * offsets (SSUSB_DEV_BASE=0x0) so kernel DT sets mac
+			 * at 0x11201000. The reg window here is sized to
+			 * cover up to just before IPPC (0x11203e00).
+			 */
+			reg = <0 0x11200000 0 0x3e00>,
+			      <0 0x11203e00 0 0x0100>;
+			reg-names = "mac", "ippc";
+			interrupts = <GIC_SPI 128 IRQ_TYPE_LEVEL_HIGH 0>;
+			phys = <&u2port0 PHY_TYPE_USB2>;
+			clocks = <&infracfg_ao CLK_IFRAO_SSUSB>,
+			         <&apmixedsys CLK_APMIXED_USBPLL>,
+			         <&infracfg_ao CLK_IFRAO_APDMA>,
+			         <&infracfg_ao CLK_IFRAO_SSUSB_XHCI>;
+			clock-names = "sys_ck", "ref_ck", "dma_ck", "host_ck";
+			/*
+			 * force-vbus: bypass VBUS detection. Without it, gadget
+			 * waits for a host-side VBUS signal before enabling D+
+			 * pullup. theloop likely doesn't provide that signal path
+			 * in u-boot's observable state. Stock kernel DT sets it.
+			 */
+			mediatek,force-vbus;
+			#address-cells = <2>;
+			#size-cells = <2>;
+			ranges;
+			status = "okay";
+
+			ssusb: ssusb@11200000 {
+				compatible = "mediatek,ssusb";
+				reg = <0 0x11200000 0 0x3e00>;
+				reg-names = "mac";
+				interrupts = <GIC_SPI 128 IRQ_TYPE_LEVEL_HIGH 0>;
+				dr_mode = "peripheral";
+				maximum-speed = "high-speed";
+				status = "okay";
+			};
+		};
+	};
+};
+
+/*
+ * MT6359P regulators live on the pwrap bus. This adds the pmic subnode
+ * and all its regulator children. The .dtsi uses `&pwrap { pmic { ... } }`
+ * syntax so it can only be included AFTER the pwrap node is declared
+ * above.
+ */
+#include "mt6359.dtsi"
+
+&ssusb0 {
+	vusb33-supply = <&mt6359_vusb_ldo_reg>;
+};

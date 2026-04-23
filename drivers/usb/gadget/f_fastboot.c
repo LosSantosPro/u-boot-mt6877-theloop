@@ -11,11 +11,13 @@
  */
 #include <command.h>
 #include <config.h>
+#include <cpu_func.h>
 #include <env.h>
 #include <errno.h>
 #include <fastboot.h>
 #include <log.h>
 #include <malloc.h>
+#include <linux/delay.h>
 #include <linux/printk.h>
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>

@@ -5,7 +5,10 @@
  * Author: Chunfeng Yun <chunfeng.yun@mediatek.com>
  */
 
+#include <cpu_func.h>
 #include <dm/lists.h>
+#include <linux/arm-smccc.h>
+#include <linux/delay.h>
 #include <linux/iopoll.h>
 
 #include "mtu3.h"
@@ -227,10 +230,12 @@ static int mtu3_gadget_probe(struct udevice *dev)
 {
 	struct ssusb_mtk *ssusb = dev_to_ssusb(dev->parent);
 	struct mtu3 *mtu = dev_get_priv(dev);
+	int ret;
 
 	mtu->dev = dev;
 	ssusb->u3d = mtu;
-	return ssusb_gadget_init(ssusb);
+	ret = ssusb_gadget_init(ssusb);
+	return ret;
 }
 
 static int mtu3_gadget_remove(struct udevice *dev)

@@ -7,6 +7,9 @@
  * Author: Chunfeng Yun <chunfeng.yun@mediatek.com>
  */
 
+#include <cpu_func.h>
+#include <linux/delay.h>
+
 #include "mtu3.h"
 
 void mtu3_req_complete(struct mtu3_ep *mep,
@@ -617,6 +620,7 @@ static void mtu3_gadget_init_eps(struct mtu3 *mtu)
 		init_hw_ep(mtu, mtu->in_eps + epnum, epnum, 1);
 		init_hw_ep(mtu, mtu->out_eps + epnum, epnum, 0);
 	}
+
 }
 
 int mtu3_gadget_setup(struct mtu3 *mtu)

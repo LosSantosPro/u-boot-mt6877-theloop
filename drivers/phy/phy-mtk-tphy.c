@@ -355,6 +355,37 @@ static void u2_phy_instance_power_on(struct mtk_tphy *tphy,
 	clrsetbits_le32(u2_banks->com + U3P_U2PHYDTM1,
 			P2C_RG_SESSEND, P2C_RG_VBUSVALID | P2C_RG_AVALID);
 
+	/*
+	 * Force USB PHY to device mode. kernel's phy_set_mode for
+	 * PHY_MODE_USB_DEVICE writes P2C_FORCE_IDDIG | P2C_RG_IDDIG; u-boot
+	 * has no set_mode op so we do it unconditionally here (gadget-only
+	 * use case in u-boot fastboot).
+	 */
+	setbits_le32(u2_banks->com + U3P_U2PHYDTM1,
+		     P2C_FORCE_IDDIG | P2C_RG_IDDIG);
+
+	/*
+	 * MT6877 PHY calibration. Kernel DT has these properties that
+	 * u-boot's phy_parse_property doesn't read. Apply them here with
+	 * kernel's recommended values.
+	 *
+	 * Kernel uses `phy_efuse_set_v1` path (mediatek,set-efuse-v1) which
+	 * does NOT set MR1_EFUSE_AUTO_LOAD_DIS -- auto-load happens once at
+	 * power-on, our late write sticks without that bit.
+	 *
+	 *   PA1_RG_INTR_CAL (bits 23:19) = 0x13    (efuse @0x1b0)
+	 *   PA6_RG_U2_PHY_REV4 (bit 28)  = 1       (kernel DT rev4 = 1)
+	 *   PA6_RG_U2_PHY_REV6 (bits 31:30) = 1    (kernel DT rev6 = 1)
+	 *   PA6_RG_U2_SQTH (bits 3:0)    = 5       (kernel DT rx-sqth = 5)
+	 */
+	clrsetbits_le32(u2_banks->com + U3P_USBPHYACR1,
+			GENMASK(23, 19),
+			0x13 << 19);
+	/* rev4 bit 28, rev6 bits 31:30, sqth bits 3:0 */
+	clrsetbits_le32(u2_banks->com + U3P_USBPHYACR6,
+			BIT(28) | GENMASK(31, 30) | GENMASK(3, 0),
+			BIT(28) | (1u << 30) | 5);
+
 	dev_dbg(tphy->dev, "%s(%d)\n", __func__, instance->index);
 }
 

@@ -882,6 +882,13 @@ static const struct udevice_id mtk_pwrap_ids[] = {
 	{ .compatible = "mediatek,mt8188-pwrap", .data = (ulong)&pwrap_mt8188 },
 	{ .compatible = "mediatek,mt8189-pwrap", .data = (ulong)&pwrap_mt8189 },
 	{ .compatible = "mediatek,mt8365-pwrap", .data = (ulong)&pwrap_mt8365 },
+	/*
+	 * MT6877's pwrap is register-compatible with MT8188's (same IP
+	 * generation, similar MT6359 PMIC). Use MT8188 settings. Validated
+	 * against kernel at arch/arm64/boot/dts/mediatek/mt6877.dts which
+	 * declares "mediatek,mt6877-pwrap" at 0x10026000 + 0x10028000.
+	 */
+	{ .compatible = "mediatek,mt6877-pwrap", .data = (ulong)&pwrap_mt8188 },
 	{ }
 };
 

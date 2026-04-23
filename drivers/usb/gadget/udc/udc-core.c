@@ -13,9 +13,11 @@
  *		       usb_
  */
 
+#include <cpu_func.h>
 #include <dm/device_compat.h>
 #include <dm/devres.h>
 #include <linux/compat.h>
+#include <linux/delay.h>
 #include <malloc.h>
 #include <asm/cache.h>
 #include <linux/dma-mapping.h>
@@ -299,6 +301,7 @@ static int udc_bind_to_driver(struct usb_udc *udc, struct usb_gadget_driver *dri
 	udc->driver = driver;
 
 	usb_gadget_udc_set_speed(udc, driver->speed);
+
 
 	ret = driver->bind(udc->gadget);
 	if (ret)

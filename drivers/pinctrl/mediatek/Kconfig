@@ -38,6 +38,16 @@ config PINCTRL_MT8188
 	bool "MT8188 SoC pinctrl driver"
 	select PINCTRL_MTK
 
+config PINCTRL_MT6877
+	bool "MT6877 SoC pinctrl driver (using MT8188 backend as scaffold)"
+	select PINCTRL_MTK
+	help
+	  theloop scaffold: enables the MT8188 pinctrl backend for MT6877
+	  target. Pin tables are MT8188's and will NOT produce correct pin
+	  muxing on MT6877 hardware — this is a compile-time placeholder so
+	  the u-boot scaffold builds. Replace with a native MT6877 pinctrl
+	  driver before expecting on-hardware peripherals (eMMC, I2C) to work.
+
 config PINCTRL_MT8195
 	bool "MT8195 SoC pinctrl driver"
 	select PINCTRL_MTK

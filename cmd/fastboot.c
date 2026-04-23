@@ -8,11 +8,13 @@
  */
 #include <command.h>
 #include <console.h>
+#include <cpu_func.h>
 #include <g_dnl.h>
 #include <fastboot.h>
 #include <net.h>
 #include <usb.h>
 #include <watchdog.h>
+#include <linux/delay.h>
 #include <linux/printk.h>
 #include <linux/stringify.h>
 
@@ -90,6 +92,7 @@ static int do_fastboot_usb(int argc, char *const argv[],
 
 	g_dnl_clear_detach();
 	ret = g_dnl_register("usb_dnl_fastboot");
+
 	if (ret)
 		return ret;
 
