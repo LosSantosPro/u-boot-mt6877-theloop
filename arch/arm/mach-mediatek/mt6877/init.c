@@ -59,11 +59,12 @@ int board_late_init(void)
 	 * finalized until board_init returns; values set earlier get wiped
 	 * by env_relocate.
 	 *
-	 * serial# not set yet; we need to find the correct offset into the
-	 * MT6877 efuse controller (base 0x11cb0000, confirmed live in v129
-	 * via status-register pattern 0x000003FF at offset 8) where the
-	 * per-die unique ID lives. v130 exposes a parameterized
-	 * `fastboot getvar efuse:XX` probe for that search.
+	 * serial# is intentionally not set. Stock MTK LK reads the SN1 blob
+	 * from the nvram partition (that is how a provisioned device shows
+	 * e.g. "GNFMGBD3PCA000205"); replicating that would require MMC raw
+	 * reads + SN1 format parsing from u-boot. Since pmOS userspace gets
+	 * the real serial from the kernel nvram driver anyway, leaving
+	 * serialno as "Value not set" at the fastboot stage is fine.
 	 */
 	env_set("board", "tb8791p1_64");
 	env_set("platform", "MT6877");
