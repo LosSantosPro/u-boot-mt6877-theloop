@@ -27,11 +27,23 @@ CONFIG_CMD_FASTBOOT=y
 # via the PCB debug pads (UART). With these, the host can run arbitrary
 # u-boot shell commands AND read back the console over the same fastboot
 # USB link we already have working.
-#   fastboot oem run "bootefi bootmgr"    -> run a u-boot command
+#
+# Correct wire syntax: u-boot's dispatcher splits command name from the
+# parameter using ':' (not space), so the host must use the colon form:
+#   fastboot oem "run:bootefi bootmgr"    -> run a u-boot command
 #   fastboot oem console                  -> dump u-boot's printf buffer
+# (the generic "fastboot oem run X" form sends space-separated tokens
+#  that the dispatcher treats as one unknown command.)
+#
+# Buffer size: 64 KiB. One `dm tree` alone is ~200 lines / ~15 KiB of
+# output; smaller buffers overflow mid-session and then self-lock
+# (console_record_readline returns -ENOSPC once GD_FLG_RECORD_OVF is
+# set, and the reset path only fires when the buffer is empty, so it
+# can never recover on its own). We also add a local self-heal in
+# fb_command.c to clear the overflow state after reporting it.
 CONFIG_FASTBOOT_OEM_RUN=y
 CONFIG_CONSOLE_RECORD=y
-CONFIG_CONSOLE_RECORD_OUT_SIZE=0x4000
+CONFIG_CONSOLE_RECORD_OUT_SIZE=0x10000
 CONFIG_FASTBOOT_CMD_OEM_CONSOLE=y
 
 CONFIG_ENV_IS_NOWHERE=y

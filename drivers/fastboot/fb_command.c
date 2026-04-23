@@ -181,10 +181,24 @@ void fastboot_multiresponse(int cmd, char *response)
 			} else {
 				int ret = console_record_readline(buf, sizeof(buf) - 5);
 
-				if (ret < 0)
+				if (ret == -ENOSPC) {
+					/*
+					 * Record buffer overflowed. Upstream
+					 * behaviour: readline returns -ENOSPC
+					 * forever until reboot because reset
+					 * only runs on empty-buffer path.
+					 * Self-heal: report the overflow then
+					 * reset state so the next command's
+					 * output lands in a fresh buffer.
+					 */
+					fastboot_fail("console buffer overflow, reset for next command",
+						      response);
+					console_record_reset();
+				} else if (ret < 0) {
 					fastboot_fail("Error reading console", response);
-				else
+				} else {
 					fastboot_response("INFO", response, "%s", buf);
+				}
 			}
 			break;
 		}
