@@ -26,7 +26,7 @@
 #include <dt-bindings/clock/mediatek,mt6877-clk.h>
 
 / {
-	model = "theloop MT6877 engineering unit";
+	model = "theloop";
 	compatible = "theloop,mt6877", "mediatek,mt6877";
 	interrupt-parent = <&gic>;
 	#address-cells = <2>;
