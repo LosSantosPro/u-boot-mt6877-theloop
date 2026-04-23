@@ -28,6 +28,8 @@ static void getvar_has_slot(char *var_parameter, char *response);
 static void getvar_partition_type(char *part_name, char *response);
 static void getvar_partition_size(char *part_name, char *response);
 static void getvar_is_userspace(char *var_parameter, char *response);
+static void getvar_efuse1(char *var_parameter, char *response);
+static void getvar_efuse2(char *var_parameter, char *response);
 
 static const struct {
 	const char *variable;
@@ -92,6 +94,17 @@ static const struct {
 		.variable = "is-userspace",
 		.dispatch = getvar_is_userspace,
 		.list = true
+	}, {
+		/* Debug: MT6877 efuse probe, readings from env vars populated
+		 * in board_late_init(). Non-listed so they don't appear in
+		 * "getvar all"; query with `fastboot getvar efuse1`. */
+		.variable = "efuse1",
+		.dispatch = getvar_efuse1,
+		.list = false
+	}, {
+		.variable = "efuse2",
+		.dispatch = getvar_efuse2,
+		.list = false
 	}
 };
 
@@ -262,6 +275,20 @@ static void __maybe_unused getvar_partition_size(char *part_name, char *response
 static void getvar_is_userspace(char *var_parameter, char *response)
 {
 	fastboot_okay("no", response);
+}
+
+static void getvar_efuse1(char *var_parameter, char *response)
+{
+	const char *v = env_get("efuse1");
+
+	fastboot_okay(v ? v : "not-probed", response);
+}
+
+static void getvar_efuse2(char *var_parameter, char *response)
+{
+	const char *v = env_get("efuse2");
+
+	fastboot_okay(v ? v : "not-probed", response);
 }
 
 static int current_all_dispatch;
