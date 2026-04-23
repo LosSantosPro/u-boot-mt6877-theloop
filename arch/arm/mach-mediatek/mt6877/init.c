@@ -13,6 +13,7 @@
 #include <asm/io.h>
 #include <asm/system.h>
 #include <dm/uclass.h>
+#include <fdtdec.h>
 #include <linux/kernel.h>
 #include <linux/sizes.h>
 #include <wdt.h>
@@ -28,21 +29,17 @@ DECLARE_GLOBAL_DATA_PTR;
 int dram_init(void)
 {
 	/*
-	 * v19: override the DT-based memory size detection and hardcode a
-	 * small safe-known-mapped DRAM range. Our DT claims 2 GiB but v18's
-	 * silent hang (board_init not reached) strongly suggests relocation
-	 * fails because gd->relocaddr lands in DRAM the preloader hasn't
-	 * initialized.
+	 * Read ram_base + ram_size from the memory@40000000 DT node (2 GiB).
+	 * theloop silicon is 4 GiB LPDDR4x, kernel/pmOS sees ~3.5 GiB after
+	 * ATF/TEE/modem reservations; 2 GiB is plenty for u-boot's own use
+	 * and get_effective_memsize() caps ram_top at SZ_4G - ram_base below.
 	 *
-	 * Preloader DEFINITELY has 0x40000000..0x50000000 (256 MiB) mapped
-	 * — LK is loaded to 0x48200000 and its code runs from there, so the
-	 * DRAM below+above it must be usable. Declare only that window; u-boot
-	 * will relocate itself within it (typically to near top of ram_size,
-	 * so ~0x4FF00000). Well below any possibly-unmapped region.
+	 * v19..v124 had this hardcoded to a defensive 256 MiB window because
+	 * silent hangs before UART came up made it impossible to tell where
+	 * relocation was landing. Now that the console is live and relocation
+	 * demonstrably works, trust the DT like sibling MT8188/MT8195 do.
 	 */
-	gd->ram_base = 0x40000000;
-	gd->ram_size = 0x10000000;	/* 256 MiB */
-	return 0;
+	return fdtdec_setup_mem_size_base();
 }
 
 int board_init(void)
