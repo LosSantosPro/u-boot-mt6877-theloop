@@ -45,22 +45,75 @@ int dram_init(void)
 
 int board_init(void)
 {
+	return 0;
+}
+
+/*
+ * Probe MT6877 efuse for a per-die unique ID to use as fastboot serial#.
+ * MT8791/MT6877 shares IP generation with MT8188 (efuse@11f20000) and
+ * sits close to MT8183/MT8791 (efuse@11f10000). We don't have a
+ * confirmed base for MT6877 yet so try both; first one that returns
+ * sane (non-zero, non-0xffffffff) data wins. Efuse is auto-latched by
+ * preloader so no clock/controller init is needed from here.
+ *
+ * Note: the first few words at offset 0 are control registers on most
+ * MTK efuse controllers; the per-die data bank starts at a product-
+ * specific offset. Without a datasheet we pull words 2+3 (offsets 8,
+ * 0xc) which tend to hold non-control data across MTK generations.
+ * Result is a 16-char hex string "W2W3" to loosely match the look of
+ * stock SNs like "GNFMGBD3PCA000205" without pretending it's the same.
+ */
+static const char *theloop_probe_efuse_serial(char *buf, size_t buflen)
+{
+	static const u32 bases[] = { 0x11f20000, 0x11f10000 };
+	u32 w2, w3;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(bases); i++) {
+		w2 = readl((void __iomem *)(uintptr_t)(bases[i] + 0x8));
+		w3 = readl((void __iomem *)(uintptr_t)(bases[i] + 0xc));
+		printf("theloop: efuse@%08x +8/+c = 0x%08x 0x%08x\n",
+		       bases[i], w2, w3);
+		if (w2 == 0 || w2 == 0xffffffff)
+			continue;
+		snprintf(buf, buflen, "%08X%08X", w2, w3);
+		return buf;
+	}
+	return NULL;
+}
+
+int board_late_init(void)
+{
+	const char *sn;
+	char snbuf[17];
+
 	/*
 	 * Populate env vars that fastboot getvar reads:
 	 *   board    -> getvar "product"    (tb8791p1_64 matches stock LK)
 	 *   platform -> getvar "platform"   (SoC codename)
+	 *   serial#  -> getvar "serialno" and USB descriptor iSerialNumber
 	 *
-	 * serial# is intentionally NOT set. The real per-device serial lives
-	 * in the nvram partition's SN1 blob, which is written by MTK's factory
-	 * QC tool and read by the kernel nvram driver at runtime. Hardcoding
-	 * a fake string here (stock LK uses "0123456789ABCDEF" across every
-	 * shipped device) would be misleading and prevent `fastboot devices`
-	 * from distinguishing units. Leaving it unset makes getvar serialno
-	 * return "Value not set" which is honest. Userspace gets the real
-	 * serial from the kernel side once pmOS boots.
+	 * Must live in board_late_init (not board_init) because env is not
+	 * finalized until after board_init returns; values set earlier get
+	 * wiped by env_relocate / env default-loading.
+	 *
+	 * serial# is derived from the SoC efuse per-die ID. Stock LK shows
+	 * the factory-written SN from the nvram partition (format like
+	 * GNFMGBD3PCA000205), which we cannot match exactly without parsing
+	 * the SN1 blob. The efuse-derived hex string is still per-device
+	 * and deterministic, so `fastboot devices` can disambiguate units.
 	 */
 	env_set("board", "tb8791p1_64");
 	env_set("platform", "MT6877");
+
+	sn = theloop_probe_efuse_serial(snbuf, sizeof(snbuf));
+	if (sn) {
+		env_set("serial#", sn);
+		printf("theloop: serial# = %s\n", sn);
+	} else {
+		printf("theloop: efuse returned no usable serial; leaving unset\n");
+	}
+
 	return 0;
 }
 
