@@ -33,18 +33,17 @@
 	#size-cells = <2>;
 
 	aliases {
+		serial0 = &uart0;
 		usb0 = &ssusb0;
 	};
 
 	chosen {
 		/*
-		 * No accessible UART on theloop (SuzyQable tested, SBU lines
-		 * not routed). u-boot runs silently until USB gadget comes
-		 * up, then fastboot status messages are the only channel.
-		 * CONFIG_REQUIRE_SERIAL_CONSOLE is unset in the defconfig so
-		 * we don't panic on this.
+		 * UART0 at 0x11002000 (apuart0). Debug pads TX/RX/GND found
+		 * on the PCB near the USB-C port (labelled on silkscreen).
+		 * Use 921600 8N1 matching CONFIG_BAUDRATE.
 		 */
-		stdout-path = "";
+		stdout-path = "serial0:921600n8";
 	};
 
 	cpus {
@@ -140,6 +139,21 @@
 				     "mediatek,mt8188-apmixedsys", "syscon";
 			reg = <0 0x1000c000 0 0x1000>;
 			#clock-cells = <1>;
+		};
+
+		/*
+		 * UART0 debug console. MTK debug pads TX/RX/GND exposed
+		 * near the USB-C connector on theloop PCB.
+		 *   clocks: "baud" = 26 MHz crystal, "bus" = IFRAO_UART0
+		 * CONFIG_BAUDRATE (defconfig) sets 921600.
+		 */
+		uart0: serial@11002000 {
+			compatible = "mediatek,mt6577-uart";
+			reg = <0 0x11002000 0 0x1000>;
+			interrupts = <GIC_SPI 141 IRQ_TYPE_LEVEL_HIGH 0>;
+			clocks = <&clk26m>, <&infracfg_ao CLK_IFRAO_UART0>;
+			clock-names = "baud", "bus";
+			status = "okay";
 		};
 
 		/*
@@ -267,6 +281,17 @@
 				interrupts = <GIC_SPI 128 IRQ_TYPE_LEVEL_HIGH 0>;
 				dr_mode = "peripheral";
 				maximum-speed = "high-speed";
+				/*
+				 * CRITICAL: ssusb_gadget_init reads
+				 * mediatek,force-vbus from THIS child node
+				 * (not the parent ssusb0). Without it the MAC
+				 * doesn't set VBUS_FRC_EN|VBUS_ON in MISC_CTRL
+				 * and the USB state machine stays in idle
+				 * (OPSTATE=0) even after SOFT_CONN is written
+				 * because the MAC's VBUS detector thinks
+				 * there's no USB cable.
+				 */
+				mediatek,force-vbus;
 				status = "okay";
 			};
 		};
