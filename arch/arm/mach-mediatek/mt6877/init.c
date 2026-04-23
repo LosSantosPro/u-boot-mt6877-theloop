@@ -13,6 +13,7 @@
 #include <asm/io.h>
 #include <asm/system.h>
 #include <dm/uclass.h>
+#include <env.h>
 #include <fdtdec.h>
 #include <linux/kernel.h>
 #include <linux/sizes.h>
@@ -44,6 +45,22 @@ int dram_init(void)
 
 int board_init(void)
 {
+	/*
+	 * Populate env vars that fastboot getvar reads:
+	 *   board     -> getvar "product"      (tb8791p1_64 matches stock LK)
+	 *   platform  -> getvar "platform"     (SoC codename)
+	 *   serial#   -> getvar "serialno" and USB descriptor iSerialNumber
+	 *
+	 * These are hardcoded here because CONFIG_ENV_IS_NOWHERE=y means there
+	 * is no persistent env; without this, getvar returns "Board not set"
+	 * / "platform not set" / "Value not set" and host-side tooling that
+	 * matches on product (e.g. Android build flash scripts) refuses to
+	 * proceed. serial# is not a real per-device serial - set per-device
+	 * from userspace later if needed.
+	 */
+	env_set("board", "tb8791p1_64");
+	env_set("platform", "MT6877");
+	env_set("serial#", "theloop-0001");
 	return 0;
 }
 

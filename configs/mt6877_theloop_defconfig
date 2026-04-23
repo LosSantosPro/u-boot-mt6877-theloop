@@ -1,10 +1,9 @@
 #include <configs/mt6877.config>
 
 CONFIG_DEFAULT_DEVICE_TREE="mediatek/mt6877-theloop"
-CONFIG_IDENT_STRING="mt6877-theloop-v32-usb"
+CONFIG_IDENT_STRING="mt6877-theloop"
 
-# v32 bisection: clk + MMC + USB + fastboot. Confirmed clk (v30) and
-# MMC (v31) both work. This test isolates USB/fastboot as cause of v29 hang.
+# USB gadget + fastboot + PHY. Enumerates as 0e8d:201c matching stock LK.
 CONFIG_USB=y
 CONFIG_USB_MTU3=y
 CONFIG_USB_GADGET=y
@@ -13,9 +12,13 @@ CONFIG_PHY=y
 CONFIG_PHY_MTK_TPHY=y
 CONFIG_USB_GADGET_VENDOR_NUM=0x0e8d
 CONFIG_USB_GADGET_PRODUCT_NUM=0x201c
+CONFIG_USB_GADGET_MANUFACTURER="theloop pmOS"
 CONFIG_USB_FUNCTION_FASTBOOT=y
 CONFIG_FASTBOOT_BUF_ADDR=0x4d000000
-CONFIG_FASTBOOT_BUF_SIZE=0x1000000
+# 128 MiB fastboot buffer, matches stock LK. Ends at 0x55000000 which
+# is well inside the 2 GiB DRAM window declared by DT. 16 MiB was too
+# small for boot.img (~64 MiB) and nowhere near super.img territory.
+CONFIG_FASTBOOT_BUF_SIZE=0x8000000
 CONFIG_FASTBOOT_FLASH=y
 CONFIG_FASTBOOT_FLASH_MMC_DEV=0
 CONFIG_CMD_FASTBOOT=y
