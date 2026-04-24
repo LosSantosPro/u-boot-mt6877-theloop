@@ -88,11 +88,16 @@ switch_to_hypervisor_ret:
 #endif
 	/*
 	 * disable interrupts (FIQ and IRQ), also set the cpu to SVC32 mode,
-	 * except if in HYP mode already
+	 * except if in HYP mode already, OR in MON mode (CONFIG_TARGET_MT6877:
+	 * MTK preloader hands LK control in MON mode and EL3 DEVAPC permissions
+	 * are tied to that. Demoting to SVC silently drops MMSYS access).
 	 */
 	mrs	r0, cpsr
 	and	r1, r0, #0x1f		@ mask mode bits
 	teq	r1, #0x1a		@ test for HYP mode
+#ifdef CONFIG_TARGET_MT6877
+	teqne	r1, #0x16		@ test for MON mode
+#endif
 	bicne	r0, r0, #0x1f		@ clear all mode bits
 	orrne	r0, r0, #0x13		@ set SVC mode
 	orr	r0, r0, #0xc0		@ disable FIQ and IRQ

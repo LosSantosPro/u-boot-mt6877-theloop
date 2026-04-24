@@ -138,12 +138,23 @@ static void theloop_gpio_set_output(int pin, int value)
 #define INFRACFG_AO_BASE	0x10001000
 #define MMSYS_BASE		0x14000000
 
+/* SPM "POWERON_CONFIG_EN" magic key - has to be written to unlock SPM
+ * register access. Without this, all SPM writes are silently dropped.
+ * Found via stock LK disassembly at VA 0x4821cc62.
+ */
+#define SPM_POWERON_CONFIG_EN	(SPM_BASE + 0x0000)
+#define SPM_KEY_VALUE		0x0B160001
+
 #define DISP_PWR_CTL		(SPM_BASE + 0x0E48)
+#define DIS1_PWR_CTL		(SPM_BASE + 0x0E00)
+#define DIS1_PWR_CTL_2		(SPM_BASE + 0x0EE8)
 #define PWR_STATUS		(SPM_BASE + 0x0EF0)
 #define PWR_STATUS_2ND		(SPM_BASE + 0x0EF4)
 #define DISP_STA_MASK		BIT(18)
 
 #define IFR_BP_CLR		(INFRACFG_AO_BASE + 0x02D8)
+#define IFR_BP_CLR_A		(INFRACFG_AO_BASE + 0x02A4)
+#define IFR_BP_PROT1_CLR	(INFRACFG_AO_BASE + 0x0B88)
 #define IFR_BP_STA		(INFRACFG_AO_BASE + 0x02D0)
 
 #define PWR_RST_B_BIT		BIT(0)
@@ -166,6 +177,16 @@ static int theloop_disp_domain_power_on(void)
 	void __iomem *ctl = (void __iomem *)(uintptr_t)DISP_PWR_CTL;
 	u32 val;
 	int retries;
+
+	/*
+	 * SPM register access unlock. This MUST be written before any
+	 * other SPM register is touched. Stock LK does this in
+	 * disp_pwr_on() at VA 0x4821cc62 BEFORE the PWR_ON dance. Without
+	 * it, our writes to 0x10006e48 are silently dropped (the
+	 * PWR_STATUS bit 18 we see is just preloader's residual state).
+	 */
+	writel(SPM_KEY_VALUE,
+	       (void __iomem *)(uintptr_t)SPM_POWERON_CONFIG_EN);
 
 	val = readl(ctl);
 
@@ -225,14 +246,48 @@ static int theloop_disp_domain_power_on(void)
 		return -3;
 	}
 
-	/* 5. Release bus protection (infracfg) in 3 steps. Each write
-	 * clears the corresponding mask in the bus protect register. */
-	writel(DIS0_PROT_STEP1_0_MASK,
-	       (void __iomem *)(uintptr_t)IFR_BP_CLR);
-	writel(DIS0_PROT_STEP2_0_MASK,
-	       (void __iomem *)(uintptr_t)IFR_BP_CLR);
+	/* 5. Release bus protection (infracfg). The mtk-scpsys-mt6877.c
+	 * driver collapses three masks into a single CLR register, but
+	 * stock LK reverse-engineering reveals BIT(6) goes to a different
+	 * protect group's CLR at +0x02A4 (not +0x02D8). Plus there's an
+	 * additional bit 7 to clear at +0x02A4 and a separate PROTECTEN_1
+	 * group at +0x0B88 covering the DIS1 power partition that DSI0
+	 * actually sits behind.
+	 */
+	writel(0x40,
+	       (void __iomem *)(uintptr_t)IFR_BP_CLR_A);
+	writel(0x80,
+	       (void __iomem *)(uintptr_t)IFR_BP_CLR_A);
 	writel(DIS0_PROT_STEP2_1_MASK,
 	       (void __iomem *)(uintptr_t)IFR_BP_CLR);
+	writel(DIS0_PROT_STEP1_0_MASK,
+	       (void __iomem *)(uintptr_t)IFR_BP_CLR);
+	writel(0x01010004,
+	       (void __iomem *)(uintptr_t)IFR_BP_PROT1_CLR);
+
+	/*
+	 * 7. DIS1 power partition: DSI0 at 0x14013xxx sits behind this
+	 * partition, controlled by 0x10006e00 (PWR_CON) and 0x10006ee8
+	 * (sub-control). Stock LK does this in 0x4821c5b4 with arg 1.
+	 *
+	 * Sequence: clear bits 0/1 of 0x10006ee8, set PWR_ON|PWR_ON_2ND
+	 * (bits 0+2) of 0x10006e00, poll 0x10006ef0 bit 0.
+	 */
+	val = readl((void __iomem *)(uintptr_t)DIS1_PWR_CTL_2);
+	val &= ~0x3;
+	writel(val, (void __iomem *)(uintptr_t)DIS1_PWR_CTL_2);
+
+	val = readl((void __iomem *)(uintptr_t)DIS1_PWR_CTL);
+	val |= 0x5;	/* PWR_ON | PWR_ON_2ND */
+	writel(val, (void __iomem *)(uintptr_t)DIS1_PWR_CTL);
+
+	for (retries = 1000; retries; retries--) {
+		if (readl((void __iomem *)(uintptr_t)PWR_STATUS) & 0x1)
+			break;
+		udelay(1);
+	}
+	if (!retries)
+		printf("theloop: DIS1 PWR_ON status timeout\n");
 
 	/* 6. Ungate MMSYS sub-module clocks. CG_CON0 at MMSYS+0x100
 	 * (sta), 0x104 (set), 0x108 (clr). CG_CON1 at +0x1a0/a4/a8.
@@ -295,6 +350,22 @@ static void theloop_panel_power_on(void)
 
 int board_late_init(void)
 {
+	u32 cpsr;
+
+	/*
+	 * Diagnostic: read current CPSR so we know what CPU mode we're
+	 * actually running in. Mode bits are CPSR[4:0]:
+	 *   0x10 USR, 0x11 FIQ, 0x12 IRQ, 0x13 SVC, 0x16 MON, 0x17 ABT,
+	 *   0x1A HYP, 0x1B UND, 0x1F SYS
+	 * If start.S preserved MON mode (CONFIG_TARGET_MT6877 patch), this
+	 * reads as 0x...16; otherwise SVC = 0x...13. Critical for the
+	 * DEVAPC display unlock — only MON mode has secure-world DEVAPC
+	 * bypass.
+	 */
+	asm volatile ("mrs %0, cpsr" : "=r" (cpsr));
+	printf("theloop: CPSR = 0x%08x (mode = 0x%02x)\n",
+	       cpsr, cpsr & 0x1f);
+
 	/*
 	 * Populate env vars that fastboot getvar reads:
 	 *   board    -> getvar "product"    (tb8791p1_64 matches stock LK)
