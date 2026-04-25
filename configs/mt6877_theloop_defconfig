@@ -51,6 +51,13 @@ CONFIG_ENV_IS_NOWHERE=y
 CONFIG_USE_BOOTCOMMAND=y
 CONFIG_BOOTCOMMAND="fastboot 0"
 CONFIG_CMD_BOOTI=y
+# Android boot.img v3+ support. Splits kernel (boot.img) and ramdisk
+# (vendor_boot.img) into two separate images. Without CMD_ABOOTIMG,
+# u-boot fastboot boot fails with "For boot header v3+ vendor boot
+# image has to be provided / ERROR -22: can't get kernel image!".
+# pmOS boot.img is v3+ so this is required.
+CONFIG_CMD_ABOOTIMG=y
+CONFIG_ANDROID_BOOT_IMAGE=y
 CONFIG_HUSH_PARSER=y
 CONFIG_FIT=y
 CONFIG_BOOTDELAY=1
