@@ -15,6 +15,7 @@
 #include <dm/uclass.h>
 #include <env.h>
 #include <fdtdec.h>
+#include <linux/arm-smccc.h>
 #include <linux/delay.h>
 #include <linux/kernel.h>
 #include <linux/sizes.h>
@@ -103,6 +104,45 @@ static void theloop_gpio_set_output(int pin, int value)
 	else
 		val &= ~(1U << bit);
 	writel(val, iocfg0 + reg);
+}
+
+/*
+ * Call into the BL31 (Trusted Firmware-A) that MTK preloader has
+ * already loaded and started in EL3 secure monitor mode at 0x48C00DC0.
+ *
+ * This is the missing piece that's been blocking display: stock LK
+ * does the same thing. Stock LK is pure AArch32 SVC mode end-to-end,
+ * never touches MVBAR/SCR/MON. It just issues SMC #0 with the right
+ * MTK SiP function ID and BL31 handles the privileged DEVAPC writes
+ * from secure world.
+ *
+ * Two calls in order:
+ *   FID 0x8200040c (platform_sec_post_init) - signals BL31 that
+ *     post-init is complete; unblocks subsequent permission ops.
+ *   FID 0x8200040b op=6 (DAPC_DUMP_CTRL set-permission), arg2=1
+ *     (slave domain that gates MMSYS). After this, MMSYS sub-modules
+ *     accept non-secure CPU writes.
+ *
+ * Found via stock LK disassembly at VAs 0x4820431a (sec_post_init)
+ * and 0x4821ceac (DEVAPC unlock).
+ */
+static void theloop_call_bl31_unlocks(void)
+{
+	struct arm_smccc_res res;
+
+	/* Step 1: platform_sec_post_init signal */
+	arm_smccc_smc(0x8200040c, 0, 0, 0, 0, 0, 0, 0, &res);
+	printf("theloop: SMC sec_post_init returned a0=0x%lx a1=0x%lx\n",
+	       res.a0, res.a1);
+
+	/* Step 2: DEVAPC permission for slave domain 1 (MMSYS group).
+	 * arg1 = 6 (op = set permission)
+	 * arg2 = 1 (devid / slave domain)
+	 * Stock LK passes arg3 too but we start with the minimum.
+	 */
+	arm_smccc_smc(0x8200040b, 6, 1, 0, 0, 0, 0, 0, &res);
+	printf("theloop: SMC DEVAPC_unlock returned a0=0x%lx a1=0x%lx\n",
+	       res.a0, res.a1);
 }
 
 /*
@@ -386,12 +426,14 @@ int board_late_init(void)
 	env_set("platform", "MT6877");
 
 	/*
-	 * Display Phase 2 (power domain): turn on the MT6877 DISP
-	 * power domain via SCPSYS and ungate MMSYS clocks. Without
-	 * this, every display MMIO register (DSI @ 0x14013000, OVL @
-	 * 0x14005000, etc.) reads as zero because the bus protection
-	 * bridge blocks transactions.
+	 * Display Phase 2 (DEVAPC unlock + power domain): first call
+	 * into the already-running BL31 to flip DEVAPC permission
+	 * for the MMSYS slave domain, then turn on the DISP power
+	 * domain via SCPSYS and ungate MMSYS clocks. Without the
+	 * SMC unlock, every MMSYS sub-module write was getting
+	 * silently dropped by DEVAPC at the bus level.
 	 */
+	theloop_call_bl31_unlocks();
 	theloop_disp_domain_power_on();
 
 	/*
